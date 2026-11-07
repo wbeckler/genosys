@@ -57,6 +57,12 @@ pattern xilinx_dsp_pack
 state <SigBit> clock
 state <SigSpec> sigA sigB sigC sigD sigM sigP
 state <IdString> postAddAB postAddMuxAB
+// Value ranges of the multiplier operands (A side after any pre-adder, B),
+// used to prove that the full-width DSP product equals what the RTL sees.
+state <int64_t> aLo aHi bLo bHi
+// Only the low prodModBits bits of the DSP product are guaranteed to match
+// the RTL (an inexact pre-adder is still exact modulo 2**width(Y)).
+state <int> prodModBits
 state <Cell*> ffAD ffA1 ffA2
 state <Cell*> ffB1 ffB2
 state <Cell*> ffD ffM ffP
@@ -72,7 +78,7 @@ match dsp
 	select dsp->type.in(\DSP48E1)
 endmatch
 
-code sigA sigB sigC sigD sigM clock
+code sigA sigB sigC sigD sigM clock aLo aHi bLo bHi prodModBits
 	auto unextend = [](const SigSpec &sig) {
 		int i;
 		for (i = GetSize(sig)-1; i > 0; i--)
@@ -85,6 +91,13 @@ code sigA sigB sigC sigD sigM clock
 	};
 	sigA = unextend(port(dsp, \A));
 	sigB = unextend(port(dsp, \B));
+
+	{
+		// DSP multiplier operands are two's complement
+		port_range(port(dsp, \A), GetSize(sigA), aLo, aHi);
+		port_range(port(dsp, \B), GetSize(sigB), bLo, bHi);
+		prodModBits = 48;
+	}
 
 	sigC = port(dsp, \C, SigSpec());
 	sigD = port(dsp, \D, SigSpec());
@@ -143,14 +156,20 @@ match preAdd
 	// D port has to be 25 bits or less
 	select GetSize(port(preAdd, BA)) <= 25
 	index <SigSpec> port(preAdd, \Y) === sigA
+	// The DSP pre-adder does not wrap at the width of Y
+	filter preadd_exact(sigmap, preAdd, port(dsp, \A)) || GetSize(sigM) <= GetSize(port(preAdd, \Y))
 
 	optional
 endmatch
 
-code sigA sigD
+code sigA sigD prodModBits aLo aHi
 	if (preAdd) {
 		sigA = port(preAdd, \A);
 		sigD = port(preAdd, \B);
+		if (!preadd_exact(sigmap, preAdd, port(dsp, \A)))
+			prodModBits = GetSize(port(preAdd, \Y));
+		else
+			preadd_range(sigmap, preAdd, aLo, aHi);
 	}
 endcode
 
@@ -171,14 +190,19 @@ match preSub
 	// A port has to be 30 bits or less
 	select GetSize(port(preSub, \B)) <= 30
 	index <SigSpec> port(preSub, \Y) === sigA
+	filter preadd_exact(sigmap, preSub, port(dsp, \A)) || GetSize(sigM) <= GetSize(port(preSub, \Y))
 
 	optional
 endmatch
 
-code sigA sigD
+code sigA sigD prodModBits aLo aHi
 	if (preSub) {
 		sigD = port(preSub, \A);
 		sigA = port(preSub, \B);
+		if (!preadd_exact(sigmap, preSub, port(dsp, \A)))
+			prodModBits = GetSize(port(preSub, \Y));
+		else
+			preadd_range(sigmap, preSub, aLo, aHi);
 	}
 endcode
 
@@ -296,7 +320,11 @@ code argD ffM sigM sigP clock
 	if (param(dsp, \MREG).as_int() == 0 && nusers(sigM) == 2) {
 		argD = sigM;
 		subpattern(out_dffe);
-		if (dff) {
+		// MREG output is internal to the DSP once later stages are packed,
+		// so register bits that copy sigM (sign extension) have nothing to
+		// be rewired to: leave such registers in fabric.
+		if (dff && !ff_has_tail(sigmap, dff, sigM))
+		{
 			ffM = dff;
 			clock = dffclock;
 			sigM = dffQ;
@@ -324,6 +352,10 @@ match postAdd
 	filter port(postAdd, AB).extract(0, GetSize(sigP)) == sigP
 	// Check that remainder of AB is a sign- or zero-extension
 	filter port(postAdd, AB).extract_end(GetSize(sigP)) == SigSpec(sigP[GetSize(sigP)-1], GetSize(port(postAdd, AB))-GetSize(sigP)) || port(postAdd, AB).extract_end(GetSize(sigP)) == SigSpec(State::S0, GetSize(port(postAdd, AB))-GetSize(sigP))
+	// The DSP adds the full-width product, not the (possibly truncated) sigP
+	// the $add sees.  Only fold if they agree on every result bit.
+	filter postadd_product_exact(sigmap, postAdd, AB, sigP, aLo, aHi, bLo, bHi)
+	filter GetSize(port(postAdd, \Y)) <= prodModBits
 
 	set postAddAB AB
 	optional
@@ -388,6 +420,8 @@ endcode
 //      to implement this function
 match overflow
 	if ffP
+	// pattern detection looks at all 48 bits of P
+	if prodModBits == 48
 	if param(dsp, \USE_PATTERN_DETECT).decode_string() == "NO_PATDET"
 	select overflow->type.in($ge)
 	select GetSize(port(overflow, \Y)) <= 48
@@ -495,6 +529,9 @@ match ff
 	filter GetSize(port(ff, \D)) >= offset + GetSize(argD)
 	filter port(ff, \D).extract(offset, GetSize(argD)) == argD
 
+	// RSTM/RSTP reset to zero: the absorbed bits must reset to zero too
+	filter ff->type.in($dff, $dffe) || param(ff, \SRST_VALUE).extract(offset, GetSize(argD)).is_fully_zero()
+
 	filter clock == SigBit() || port(ff, \CLK)[0] == clock
 endmatch
 
@@ -513,6 +550,12 @@ code argQ
 				if (b != State::Sx && b != State::S0)
 					reject;
 	}
+
+	// Bits of the register outside argD whose D is one of the argD bits
+	// (e.g. sign-extension copies) get rewired to the DSP output after
+	// packing; they must behave exactly like the absorbed bit.
+	if (!out_dffe_tail_ok(sigmap, ff, argD))
+		reject;
 
 	dff = ff;
 	dffQ = argQ;

@@ -1,0 +1,76 @@
+# genosys: xilinx_dsp must not change the function of the design.
+# Each design below was silently miscompiled by upstream synth_xilinx.
+
+# #6311: enabled output register wider than the product (sign-extension bits
+# of PREG were left undriven)
+design -reset
+read_verilog <<EOT
+module top(input clk, input ce, input signed [1:0] a, input signed [16:0] b, output reg signed [28:0] p);
+  always @(posedge clk) if (ce) p <= a * b;
+endmodule
+EOT
+proc
+equiv_opt -assert -async2sync -map +/xilinx/cells_sim.v synth_xilinx -noiopad
+design -load postopt
+select -assert-count 1 t:DSP48E1
+
+# #6312: post-adder must not add the untruncated product
+design -reset
+read_verilog <<EOT
+module top(input [12:0] a, input [3:0] b, input [28:0] c, output [32:0] y);
+  wire [12:0] m = a * b;
+  assign y = m + c;
+endmodule
+EOT
+proc
+equiv_opt -assert -map +/xilinx/cells_sim.v synth_xilinx -noiopad
+
+# #6252: registered products by constants
+design -reset
+read_verilog <<EOT
+module top(input clk, enable, input signed [12:0] n, output reg signed [30:0] a, b);
+  always @(posedge clk) if (enable) begin
+    a <= n * 18'sd43691;
+    b <= n * 18'sd87381;
+  end
+endmodule
+EOT
+proc
+equiv_opt -assert -async2sync -map +/xilinx/cells_sim.v synth_xilinx -noiopad
+
+# PR #6138: synchronous load of a non-zero constant must not become RSTP
+design -reset
+read_verilog <<EOT
+module top(input clk, input cond, input [7:0] a, b, output reg [15:0] q);
+  always @(posedge clk) if (cond) q <= a * b; else q <= 16'd50;
+endmodule
+EOT
+proc
+equiv_opt -assert -async2sync -map +/xilinx/cells_sim.v synth_xilinx -noiopad
+
+# pre-adder whose sum wraps at the declared width before an unsigned multiply
+design -reset
+read_verilog <<EOT
+module top(input clk, input signed [9:0] a, d, input [1:0] b, output [11:0] p);
+  wire signed [10:0] pa = a + d;
+  wire [11:0] m = pa * b;
+  assign p = m;
+endmodule
+EOT
+proc
+equiv_opt -assert -map +/xilinx/cells_sim.v synth_xilinx -noiopad
+
+# #6046: register with non-zero init feeding both A and B must not crash
+design -reset
+read_verilog <<EOT
+module top(input clk, output signed [15:0] p);
+  reg [31:0] r = 32'h1;
+  always @(posedge clk) r <= r + 1;
+  reg signed [15:0] pr = 0;
+  always @(posedge clk) pr <= $signed(r[7:0]) * $signed(r[15:8]);
+  assign p = pr;
+endmodule
+EOT
+proc
+synth_xilinx -noiopad
+select -assert-count 1 t:DSP48E1
