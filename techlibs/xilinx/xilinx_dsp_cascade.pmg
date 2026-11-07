@@ -66,6 +66,7 @@ endcode
 match first
 	select (first->type.in(\DSP48A, \DSP48A1) && port(first, \OPMODE, Const(0, 8)).extract(2,2) == Const::from_string("00")) || (first->type.in(\DSP48E1) && port(first, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("000"))
 	select nusers(port(first, \PCOUT, SigSpec())) <= 1
+	select !dsp_p_inexact(first)
 endmatch
 
 // (6) The longest chain is then divided into chunks of no more than
@@ -190,6 +191,7 @@ match nextP
 	select (nextP->type.in(\DSP48A, \DSP48A1) && port(nextP, \OPMODE, Const(0, 8)).extract(2,2) == Const::from_string("11")) || (nextP->type.in(\DSP48E1) && port(nextP, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("011"))
 	select nusers(port(nextP, \C, SigSpec())) > 1
 	select nusers(port(nextP, \PCIN, SigSpec())) == 0
+	select !dsp_p_inexact(nextP)
 	index <SigBit> port(nextP, \C)[0] === port(std::get<0>(chain.back()), \P)[0]
 	semioptional
 endmatch
@@ -203,6 +205,7 @@ match nextP_shift17
 	select port(nextP_shift17, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("011")
 	select nusers(port(nextP_shift17, \C, SigSpec())) > 1
 	select nusers(port(nextP_shift17, \PCIN, SigSpec())) == 0
+	select !dsp_p_inexact(nextP_shift17)
 	index <SigBit> port(nextP_shift17, \C)[0] === port(std::get<0>(chain.back()), \P)[17]
 	semioptional
 endmatch

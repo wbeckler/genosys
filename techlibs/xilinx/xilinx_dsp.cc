@@ -25,6 +25,230 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
+// DSPs whose P bits above the used ones are not the extension of the used
+// bits (see prodModBits); such P must not feed a PCOUT -> PCIN cascade.
+// Filled by xilinx_dsp_pack, consulted by the cascade matcher, cleared per
+// module.
+static pool<Cell*> inexact_p_dsps;
+
+static bool dsp_p_inexact(Cell *cell)
+{
+	return inexact_p_dsps.count(cell) > 0;
+}
+
+// Range of the two's complement value of a DSP operand port, given that
+// only its low n bits are significant (the rest being a sign or constant
+// extension, see unextend()).
+static void port_range(const SigSpec &full, int n, int64_t &lo, int64_t &hi)
+{
+	if (full.is_fully_const() && GetSize(full) <= 31) { // as_int_saturating is 32-bit
+		lo = hi = full.as_const().as_int_saturating(true);
+		return;
+	}
+	n = std::min(n, 62);
+	if (n == 0) {
+		lo = hi = 0;
+	} else if (n == GetSize(full) || full[n].wire) {
+		lo = -(int64_t(1) << (n-1));
+		hi = (int64_t(1) << (n-1)) - 1;
+	} else if (full[n] == State::S0) {
+		lo = 0;
+		hi = (int64_t(1) << n) - 1;
+	} else {
+		lo = -(int64_t(1) << n);
+		hi = -1;
+	}
+}
+
+// Range of an $add/$sub operand under the cell's signedness.
+static void operand_range(const SigSpec &sig, bool is_signed, int64_t &lo, int64_t &hi)
+{
+	int n = std::min(GetSize(sig), 62);
+	if (sig.is_fully_const() && GetSize(sig) <= 31) {
+		lo = hi = sig.as_const().as_int_saturating(is_signed);
+	} else if (n == 0) {
+		lo = hi = 0;
+	} else if (is_signed) {
+		lo = -(int64_t(1) << (n-1));
+		hi = (int64_t(1) << (n-1)) - 1;
+	} else {
+		lo = 0;
+		hi = (int64_t(1) << n) - 1;
+	}
+}
+
+// Exact range of the pre-adder result (only meaningful if preadd_exact()).
+static void preadd_range(const SigMap &sigmap, Cell *add, int64_t &lo, int64_t &hi)
+{
+	bool sgn = add->getParam(ID::A_SIGNED).as_bool() && add->getParam(ID::B_SIGNED).as_bool();
+	int64_t alo, ahi, blo, bhi;
+	operand_range(sigmap(add->getPort(ID::A)), sgn, alo, ahi);
+	operand_range(sigmap(add->getPort(ID::B)), sgn, blo, bhi);
+	if (add->type == ID($sub)) {
+		lo = alo - bhi;
+		hi = ahi - blo;
+	} else {
+		lo = alo + blo;
+		hi = ahi + bhi;
+	}
+}
+
+// Can the DSP's exact product stand in for sigP as operand AB of the $add?
+// sigP may be a truncation of the product; the DSP post-adder always adds the
+// full product, so every result bit above sigP must be the extension the $add
+// would apply to sigP, i.e. the product must fit sigP.
+static bool postadd_product_exact(const SigMap &sigmap, Cell *add, IdString AB, const SigSpec &sigP,
+		int64_t aLo, int64_t aHi, int64_t bLo, int64_t bHi)
+{
+	int W = GetSize(sigP);
+	int Wy = GetSize(add->getPort(ID::Y));
+	if (W == 0)
+		return false;
+	if (Wy <= W)
+		return true;
+	SigSpec op = sigmap(add->getPort(AB));
+	int WA = GetSize(op);
+	bool is_signed = add->getParam(ID::A_SIGNED).as_bool() && add->getParam(ID::B_SIGNED).as_bool();
+	bool sign_ext = true, zero_ext = true;
+	for (int i = W; i < Wy; i++) {
+		SigBit b = i < WA ? op[i] : (is_signed ? op[WA-1] : SigBit(State::S0));
+		if (b != sigP[W-1])
+			sign_ext = false;
+		if (b != State::S0)
+			zero_ext = false;
+	}
+	if (W >= 62)
+		return true;
+	// operand ranges are below 2**62 in magnitude: products fit __int128
+	__int128 c[4] = {(__int128)aLo*bLo, (__int128)aLo*bHi, (__int128)aHi*bLo, (__int128)aHi*bHi};
+	__int128 lo = *std::min_element(c, c+4), hi = *std::max_element(c, c+4);
+	log_debug("postadd_product_exact: W=%d Wy=%d signed=%d sign_ext=%d zero_ext=%d\n",
+			W, Wy, is_signed, sign_ext, zero_ext);
+	if (sign_ext && lo >= -((__int128)1 << (W-1)) && hi < ((__int128)1 << (W-1)))
+		return true;
+	if (zero_ext && lo >= 0 && hi < ((__int128)1 << W))
+		return true;
+	return false;
+}
+
+// The DSP pre-adder computes the exact (25-bit) sum/difference of its
+// operands, extended per the $add/$sub signedness, and the multiplier then
+// treats it as signed.  The RTL instead multiplies Y, truncated to its width
+// and extended into the DSP A port either by sign or by zero.  Only fold when
+// both views are the same number.
+static bool preadd_exact(const SigMap &sigmap, Cell *add, const SigSpec &dspA)
+{
+	SigSpec Y = sigmap(add->getPort(ID::Y));
+	int Wy = GetSize(Y);
+	if (Wy == 0)
+		return false;
+	bool sgn = add->getParam(ID::A_SIGNED).as_bool() && add->getParam(ID::B_SIGNED).as_bool();
+	int need = std::max(GetSize(add->getPort(ID::A)), GetSize(add->getPort(ID::B))) + 1;
+	bool ext_sign = Wy >= GetSize(dspA) || dspA[Wy] == Y[Wy-1];
+	bool ext_zero = Wy < GetSize(dspA) && dspA[Wy] == State::S0;
+	if (Wy < need)
+		return false;
+	if (sgn)
+		return ext_sign;
+	if (add->type == ID($sub))
+		return false; // unsigned difference may be negative
+	// unsigned sum is non-negative and < 2**need
+	return ext_zero || (ext_sign && Wy > need);
+}
+
+// Does the register have bits outside the argD slice whose D input is one of
+// the argD bits (typically sign-extension copies)?
+static bool ff_has_tail(const SigMap &sigmap, Cell *ff, const SigSpec &argD)
+{
+	pool<SigBit> bits(argD.begin(), argD.end());
+	SigSpec D = sigmap(ff->getPort(ID::D));
+	int n = 0;
+	for (auto b : D)
+		if (bits.count(b))
+			n++;
+	return n > GetSize(argD);
+}
+
+// Register bits whose D is one of the argD bits will be driven by the DSP
+// output register after packing.  They must reset and power up like it: to
+// zero (or undefined).
+static bool out_dffe_tail_ok(const SigMap &sigmap, Cell *ff, const SigSpec &argD)
+{
+	pool<SigBit> bits(argD.begin(), argD.end());
+	SigSpec D = sigmap(ff->getPort(ID::D));
+	SigSpec Q = ff->getPort(ID::Q);
+	bool has_srst = ff->type.in(ID($sdff), ID($sdffe));
+	Const srst = has_srst ? ff->getParam(ID::SRST_VALUE) : Const();
+	for (int k = 0; k < GetSize(D); k++) {
+		if (!bits.count(D[k]))
+			continue;
+		if (has_srst && srst[k] != State::S0)
+			return false;
+		SigBit q = Q[k];
+		if (!q.wire)
+			return false;
+		auto it = q.wire->attributes.find(ID::init);
+		if (it != q.wire->attributes.end() && GetSize(it->second) > q.offset) {
+			State s = it->second[q.offset];
+			if (s != State::S0 && s != State::Sx)
+				return false;
+		}
+	}
+	return true;
+}
+
+// After an output register's bits `absorbedQ` have been moved into the DSP,
+// rewire any remaining bits of that register that copied one of the absorbed
+// D bits so they follow the corresponding DSP output instead of reading the
+// (now undriven) pre-register signal.
+static void rewire_ff_tail(const SigMap &sigmap, Module *module, Cell *ff, const SigSpec &absorbedQ)
+{
+	pool<SigBit> absorbed;
+	for (auto b : sigmap(absorbedQ))
+		absorbed.insert(b);
+	SigSpec D = sigmap(ff->getPort(ID::D));
+	SigSpec Q = ff->getPort(ID::Q);
+	SigSpec mQ = sigmap(Q);
+	dict<SigBit, SigBit> d2q;
+	for (int k = 0; k < GetSize(Q); k++)
+		if (absorbed.count(mQ[k]))
+			d2q[D[k]] = Q[k];
+	SigSpec newQ = Q;
+	for (int k = 0; k < GetSize(Q); k++) {
+		if (absorbed.count(mQ[k]))
+			continue;
+		auto it = d2q.find(D[k]);
+		if (it == d2q.end())
+			continue;
+		module->connect(Q[k], it->second);
+		newQ[k] = module->addWire(NEW_ID);
+		// the copy now follows the DSP output register: drop its init
+		if (Q[k].wire) {
+			auto ia = Q[k].wire->attributes.find(ID::init);
+			if (ia != Q[k].wire->attributes.end() && GetSize(ia->second) > Q[k].offset)
+				ia->second.set(Q[k].offset, State::Sx);
+		}
+	}
+	ff->setPort(ID::Q, newQ);
+}
+
+// Absorbed output register bits are now driven by the DSP; forget their
+// (zero or undefined, checked by the matcher) init values.
+static void clear_init(const SigSpec &absorbedQ)
+{
+	for (auto c : absorbedQ.chunks()) {
+		if (!c.wire)
+			continue;
+		auto it = c.wire->attributes.find(ID::init);
+		if (it == c.wire->attributes.end())
+			continue;
+		for (int i = c.offset; i < c.offset+c.width && i < GetSize(it->second); i++) {
+			log_assert(it->second[i] == State::S0 || it->second[i] == State::Sx);
+			it->second.set(i, State::Sx);
+		}
+	}
+}
+
 #include "techlibs/xilinx/xilinx_dsp_pm.h"
 #include "techlibs/xilinx/xilinx_dsp48a_pm.h"
 #include "techlibs/xilinx/xilinx_dsp_CREG_pm.h"
@@ -391,16 +615,9 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			}
 			else
 				cell->setPort(ceport, State::S1);
-
-			for (auto c : Q.chunks()) {
-				auto it = c.wire->attributes.find(ID::init);
-				if (it == c.wire->attributes.end())
-					continue;
-				for (int i = c.offset; i < c.offset+c.width; i++) {
-					log_assert(it->second[i] == State::S0 || it->second[i] == State::Sx);
-					it->second.set(i, State::Sx);
-				}
-			}
+			// Input registers stay in the fabric (possibly with other
+			// users, e.g. #6046) and keep their init values; output
+			// registers are handled via clear_init() below.
 		};
 
 		if (st.ffA2) {
@@ -443,12 +660,15 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 		if (st.ffM) {
 			SigSpec M; // unused
 			f(M, st.ffM, ID(CEM), ID(RSTM));
+			clear_init(st.sigM);
 			st.ffM->connections_.at(ID::Q).replace(st.sigM, pm.module->addWire(NEW_ID, GetSize(st.sigM)));
 			cell->setParam(ID(MREG), State::S1);
 		}
 		if (st.ffP) {
 			SigSpec P; // unused
 			f(P, st.ffP, ID(CEP), ID(RSTP));
+			clear_init(st.sigP);
+			rewire_ff_tail(pm.sigmap, pm.module, st.ffP, st.sigP);
 			st.ffP->connections_.at(ID::Q).replace(st.sigP, pm.module->addWire(NEW_ID, GetSize(st.sigP)));
 			cell->setParam(ID(PREG), State::S1);
 		}
@@ -485,6 +705,11 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 	if (GetSize(P) < 48)
 		P.append(pm.module->addWire(NEW_ID, 48-GetSize(P)));
 	cell->setPort(ID::P, P);
+
+	// Upper P bits are not the extension of the used bits: P must not be
+	// forwarded wholesale through PCOUT -> PCIN.
+	if (st.prodModBits < 48)
+		inexact_p_dsps.insert(cell);
 
 	pm.blacklist(cell);
 }
@@ -836,6 +1061,7 @@ struct XilinxDspPass : public Pass {
 				xilinx_dsp_cascade_pm pm(module, module->selected_cells());
 				pm.run_xilinx_dsp_cascade();
 			}
+			inexact_p_dsps.clear();
 		}
 	}
 } XilinxDspPass;
