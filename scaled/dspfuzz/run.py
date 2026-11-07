@@ -35,19 +35,26 @@ def testbench(ports, cycles, seed):
     outs = [p for p in ports if p[0] == "output"]
     L = ["`timescale 1ns/1ps", "module tb;", "  reg clk = 0;", "  always #5 clk = !clk;"]
     for _, w, n in ins:
-        L.append(f"  reg [{w-1}:0] {n} = 0;")
+        L.append(f"  reg [{w-1}:0] {n};")
     for _, w, n in outs:
         L.append(f"  wire [{w-1}:0] g_{n}, x_{n};")
     conn_g = ", ".join([".clk(clk)"] + [f".{n}({n})" for _, _, n in ins] + [f".{n}(g_{n})" for _, _, n in outs])
     conn_x = ", ".join([".clk(clk)"] + [f".{n}({n})" for _, _, n in ins] + [f".{n}(x_{n})" for _, _, n in outs])
     L.append(f"  gold G({conn_g});")
     L.append(f"  gate X({conn_x});")
-    L.append(f"  integer seed = {seed}, i, errs = 0;")
+    L.append(f"  integer seed = {seed}, i, errs = 0, xs = 0;")
     L.append("  function [63:0] pick(input integer w); integer r; begin")
     L.append("    r = $random(seed) & 7;")
     L.append("    case (r) 0: pick = 0; 1: pick = {64{1'b1}}; 2: pick = 64'h1 << (w-1); 3: pick = ~(64'h1 << (w-1));")
     L.append("    4: pick = 1; default: pick = {$random(seed), $random(seed)}; endcase end endfunction")
     L.append("  initial begin")
+    # Inputs start as X and change at #1 so that models built from
+    # `always @*` blocks evaluate at least once before the first clock edge.
+    for _, w, n in ins:
+        L.append(f"    {n} = {w}'bx;")
+    L.append("    #1;")
+    for _, w, n in ins:
+        L.append(f"    {n} = 0;")
     L.append(f"    for (i = 0; i < {cycles}; i = i + 1) begin")
     L.append("      @(negedge clk);")
     for _, w, n in ins:
@@ -59,10 +66,11 @@ def testbench(ports, cycles, seed):
             L.append(f"      {n} = pick({w});")
     L.append("      #1;")
     for _, w, n in outs:
+        L.append(f"      if (^g_{n} === 1'bx) xs = xs + 1;")
         L.append(f"      if (^g_{n} !== 1'bx && g_{n} !== x_{n}) begin errs = errs + 1;")
         L.append(f"        if (errs <= 5) $display(\"MISMATCH cyc=%0d {n} gold=%h gate=%h\", i, g_{n}, x_{n}); end")
     L.append("    end")
-    L.append("    if (errs) $display(\"FAIL errs=%0d\", errs); else $display(\"PASS\");")
+    L.append(f"    if (errs) $display(\"FAIL errs=%0d\", errs); else if (xs * 2 > {cycles}) $display(\"VACUOUS xs=%0d\", xs); else $display(\"PASS\");")
     L.append("    $finish;")
     L.append("  end")
     L.append("endmodule")
@@ -92,13 +100,15 @@ def run_case(path, yosys, share, synth_opts, cycles):
     out = r.stdout
     if "PASS" in out:
         return path, "PASS", ""
+    if "VACUOUS" in out:
+        return path, "VACUOUS", out.strip().splitlines()[0]
     return path, "FAIL", "\n".join(l for l in out.splitlines() if "MISMATCH" in l or "FAIL" in l)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("casedir")
-    ap.add_argument("--yosys", default=os.path.join(ROOT, "build-rel", "yosys"))
+    ap.add_argument("--yosys", default=os.environ.get("YOSYS", os.path.join(ROOT, "build-rel", "yosys")))
     ap.add_argument("--share", default=None)
     ap.add_argument("--synth-opts", default="")
     ap.add_argument("--cycles", type=int, default=400)

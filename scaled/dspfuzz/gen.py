@@ -12,6 +12,9 @@ import os
 import random
 
 
+WIDE = 0.0
+
+
 def sdecl(signed):
     return "signed " if signed else ""
 
@@ -19,14 +22,19 @@ def sdecl(signed):
 def gen_case(rng, idx):
     sa, sb = rng.choice([True, False]), rng.choice([True, False])
     # mixed signedness makes Verilog treat both as unsigned; keep it anyway
-    wa = rng.randint(2, 27)
-    wb = rng.randint(2, 20)
+    if rng.random() < WIDE:
+        # wide enough to be split by mul2dsp and cascaded
+        wa = rng.randint(20, 44)
+        wb = rng.randint(17, 34)
+    else:
+        wa = rng.randint(2, 27)
+        wb = rng.randint(2, 20)
     wm = rng.choice([wa + wb, wa + wb, rng.randint(max(2, wa + wb - 12), wa + wb + 6)])
     pre = rng.random() < 0.2
     wd = rng.randint(2, wa) if pre else 0
     post = rng.choice(["none", "none", "addc", "acc"])
-    wc = rng.randint(2, 48)
-    wp = rng.choice([wm, rng.randint(max(2, wm - 8), min(48, wm + 10))])
+    wc = rng.randint(2, 64)
+    wp = rng.choice([wm, rng.randint(max(2, wm - 8), max(wm - 7, min(64, wm + 10)))])
     in_reg = rng.choice([0, 0, 1, 2])
     m_reg = rng.random() < 0.3
     out_reg = rng.choice(["none", "plain", "ce", "srst0", "srstN", "ce_srst0", "ce_srstN"]) if post != "acc" else rng.choice(["plain", "ce", "srst0", "ce_srst0", "srstN"])
@@ -45,7 +53,7 @@ def gen_case(rng, idx):
     L.append(f"module top({', '.join(ports)});")
 
     def reg(name, w, s, src, init):
-        iv = f" = {w}'d{rng.randint(1, (1 << min(w, 20)) - 1)}" if init else ""
+        iv = f" = {w}'d{rng.randint(1, (1 << min(w, 20)) - 1)}" if init else f" = {w}'d0"
         L.append(f"  reg {sdecl(s)}[{w-1}:0] {name}{iv};")
         L.append(f"  always @(posedge clk) {name} <= {src};")
 
@@ -68,7 +76,7 @@ def gen_case(rng, idx):
 
     nz = rng.randint(1, (1 << min(wp, 16)) - 1)
     if post == "acc":
-        L.append(f"  reg {sdecl(signed_m)}[{wp-1}:0] q{' = ' + str(wp) + chr(39) + 'd5' if init_out else ''};")
+        L.append(f"  reg {sdecl(signed_m)}[{wp-1}:0] q{' = ' + str(wp) + chr(39) + 'd5' if init_out else ' = 0'};")
         body = f"q <= q + {cm};"
         if "srst" in out_reg:
             rv = f"{wp}'d{nz}" if out_reg.endswith("N") else "0"
@@ -82,7 +90,7 @@ def gen_case(rng, idx):
         if out_reg == "none":
             L.append(f"  assign p = {expr};")
         else:
-            L.append(f"  reg {sdecl(signed_m)}[{wp-1}:0] q{' = ' + str(wp) + chr(39) + 'd3' if init_out else ''};")
+            L.append(f"  reg {sdecl(signed_m)}[{wp-1}:0] q{' = ' + str(wp) + chr(39) + 'd3' if init_out else ' = 0'};")
             body = f"q <= {expr};"
             if "srst" in out_reg:
                 rv = f"{wp}'d{nz}" if out_reg.endswith("N") else "0"
@@ -102,7 +110,10 @@ def main():
     ap.add_argument("outdir")
     ap.add_argument("-n", type=int, default=200)
     ap.add_argument("-s", "--seed", type=int, default=1)
+    ap.add_argument("--wide", type=float, default=0.0, help="fraction of wide (multi-DSP) multipliers")
     args = ap.parse_args()
+    global WIDE
+    WIDE = args.wide
     rng = random.Random(args.seed)
     os.makedirs(args.outdir, exist_ok=True)
     metas = []
