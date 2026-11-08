@@ -170,14 +170,30 @@ module \$__XILINX_SHIFTX (A, B, Y);
 
   generate
     genvar i, j;
-    // Bit-blast
+    // Bit-blast: Y[i] = A[B+i], so bit i can select any of A[A_WIDTH-1:i]
+    // (capped at the 2**B_WIDTH positions B can reach).
     if (Y_WIDTH > 1) begin
-      for (i = 0; i < Y_WIDTH; i++)
-        \$__XILINX_SHIFTX  #(.A_SIGNED(A_SIGNED), .B_SIGNED(B_SIGNED), .A_WIDTH(A_WIDTH-Y_WIDTH+1), .B_WIDTH(B_WIDTH), .Y_WIDTH(1'd1)) bitblast (.A(A[A_WIDTH-Y_WIDTH+i:i]), .B(B), .Y(Y[i]));
+      for (i = 0; i < Y_WIDTH; i++) begin : bitblast
+        localparam integer AW_i = (i >= A_WIDTH) ? 0 :
+                                  (B_WIDTH < 31 && (1 << B_WIDTH) < A_WIDTH - i) ? (1 << B_WIDTH) : A_WIDTH - i;
+        if (AW_i == 0)
+          assign Y[i] = 1'bx;
+        else if (AW_i == 1)
+          assign Y[i] = (B == 0) ? A[i] : 1'bx;
+        else
+          \$__XILINX_SHIFTX  #(.A_SIGNED(A_SIGNED), .B_SIGNED(B_SIGNED), .A_WIDTH(AW_i), .B_WIDTH(B_WIDTH), .Y_WIDTH(1'd1)) bitblast (.A(A[i+AW_i-1:i]), .B(B), .Y(Y[i]));
+      end
+    end
+    // Positions past 2**B_WIDTH-1 cannot be selected
+    else if (B_WIDTH < 31 && A_WIDTH > (1 << B_WIDTH)) begin
+      \$__XILINX_SHIFTX  #(.A_SIGNED(A_SIGNED), .B_SIGNED(B_SIGNED), .A_WIDTH(1 << B_WIDTH), .B_WIDTH(B_WIDTH), .Y_WIDTH(Y_WIDTH)) _TECHMAP_REPLACE_ (.A(A[(1 << B_WIDTH)-1:0]), .B(B), .Y(Y));
     end
     // If the LSB of B is constant zero (and Y_WIDTH is 1) then
     //   we can optimise by removing every other entry from A
     //   and popping the constant zero from B
+    else if (B_WIDTH == 1 && _TECHMAP_CONSTMSK_B_[0] && !_TECHMAP_CONSTVAL_B_[0]) begin
+      assign Y = A[0];
+    end
     else if (_TECHMAP_CONSTMSK_B_[0] && !_TECHMAP_CONSTVAL_B_[0]) begin
       wire [(A_WIDTH+1)/2-1:0] A_i;
       for (i = 0; i < (A_WIDTH+1)/2; i++)
@@ -276,7 +292,7 @@ module \$__XILINX_SHIFTX (A, B, Y);
           .Y_WIDTH(Y_WIDTH)
       ) _TECHMAP_REPLACE_ (
           .A(T),
-          .B(B[B_WIDTH-1-:clog2_num_mux16]),
+          .B(B[4 +: clog2_num_mux16]),  // bits above these only address positions past A (x)
           .Y(Y));
     end
   endgenerate
