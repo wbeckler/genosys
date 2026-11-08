@@ -407,3 +407,22 @@ prep -nokeepdc
 equiv_opt -assert peepopt
 design -load postopt
 select -assert-count 0 t:$div
+
+####################
+# Overlapping strided select (output wider than the stride): becomes a $bmux
+# on the select, so the multiplier disappears
+
+design -reset
+read_verilog <<EOT
+module peepopt_shiftmul_overlap (input [13*34-1:0] i, input [3:0] s, output [39:0] o);
+assign o = i[s*34+:40];
+endmodule
+EOT
+
+prep -nokeepdc
+equiv_opt -assert peepopt
+design -load postopt
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$mul
+select -assert-count 0 t:$shiftx

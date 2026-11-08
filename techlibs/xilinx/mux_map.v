@@ -72,3 +72,31 @@ module \$shiftx (A, B, Y);
     end
   endgenerate
 endmodule
+
+// $bmux (e.g. from peepopt word selects): one $__XILINX_SHIFTX per output bit
+// over that bit's position in each word, so wide word muxes use MUXF7/MUXF8.
+module \$bmux (A, S, Y);
+  parameter WIDTH = 1;
+  parameter S_WIDTH = 1;
+
+  (* force_downto *)
+  input [(WIDTH << S_WIDTH)-1:0] A;
+  (* force_downto *)
+  input [S_WIDTH-1:0] S;
+  (* force_downto *)
+  output [WIDTH-1:0] Y;
+
+  generate
+    genvar i, k;
+    if ((1 << S_WIDTH) < `MIN_MUX_INPUTS || S_WIDTH > 16)
+      wire _TECHMAP_FAIL_ = 1;
+    else
+      for (i = 0; i < WIDTH; i = i + 1) begin : bit
+        wire [(1 << S_WIDTH)-1:0] Ai;
+        for (k = 0; k < (1 << S_WIDTH); k = k + 1)
+          assign Ai[k] = A[k*WIDTH + i];
+        \$__XILINX_SHIFTX #(.A_SIGNED(0), .B_SIGNED(0), .A_WIDTH(1 << S_WIDTH), .B_WIDTH(S_WIDTH), .Y_WIDTH(1))
+          mux (.A(Ai), .B(S), .Y(Y[i]));
+      end
+  endgenerate
+endmodule

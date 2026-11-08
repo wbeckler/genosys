@@ -53,6 +53,10 @@ struct PeepoptPass : public Pass {
 		log("   * shiftmul - Replace A>>(B*C) with A'>>(B<<K) where C and K are constants\n");
 		log("                and A' is derived from A by appropriately inserting padding\n");
 		log("                into the signal. (right variant)\n");
+		log("                When the output is wider than C (overlapping selections such\n");
+		log("                as A[B*34+:40]) it instead selects the words with a $bmux on B.\n");
+		log("                Scratchpad: 'peepopt.shiftmul.max_data_multiple' (default: 2)\n");
+		log("                limits the $bmux data to a multiple of the input data.\n");
 		log("\n");
 		log("                Analogously, replace A<<(B*C) with appropriate selection of\n");
 		log("                output bits from A<<(B<<K). (left variant)\n");

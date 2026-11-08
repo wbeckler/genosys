@@ -19,3 +19,7 @@ endmodule
 module sx_b_zero(input [3:0] a, output y);
 	\$shiftx #(.A_SIGNED(0), .B_SIGNED(0), .A_WIDTH(4), .B_WIDTH(1), .Y_WIDTH(1)) s (.A(a), .B(1'b0), .Y(y));
 endmodule
+// word select that peepopt turns into a $bmux: maps onto MUXF7/MUXF8
+module bmux_word(input [32*8-1:0] in, input [4:0] sel, output [7:0] out);
+	assign out = in[sel*8 +: 8];
+endmodule

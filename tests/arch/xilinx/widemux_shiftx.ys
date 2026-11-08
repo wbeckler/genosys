@@ -25,3 +25,10 @@ equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -no
 design -load read
 hierarchy -top sx_b_zero
 equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -widemux 2
+
+design -load read
+hierarchy -top bmux_word
+equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -widemux 4
+design -load postopt
+select -assert-count 16 t:MUXF8
+select -assert-max 72 t:LUT*
