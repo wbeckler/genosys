@@ -1,0 +1,34 @@
+read_verilog -icells widemux_shiftx.v
+design -save read
+
+# Each case is proven equivalent after synth_xilinx -widemux (x in the gold model is a don't-care)
+design -load read
+hierarchy -top sx_wide_y
+equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -widemux 2
+design -load postopt
+select -assert-min 1 t:MUXF7
+
+design -load read
+hierarchy -top field_top
+equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -widemux 4
+design -load postopt
+select -assert-min 1 t:MUXF8
+
+design -load read
+hierarchy -top stride_even
+equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -nodsp -widemux 4
+
+design -load read
+hierarchy -top sx_narrow_b
+equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -widemux 2
+
+design -load read
+hierarchy -top sx_b_zero
+equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -widemux 2
+
+design -load read
+hierarchy -top bmux_word
+equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad -widemux 4
+design -load postopt
+select -assert-count 16 t:MUXF8
+select -assert-max 72 t:LUT*

@@ -67,15 +67,51 @@ code
 	if (mul_const.empty() || GetSize(mul_const) > 20)
 		reject;
 
-	// make sure there's no overlap in the signal
-	// selections by the shiftmul pattern
-	if (GetSize(port(shift, \Y)) > mul_const.as_int())
-		reject;
-
 	int factor_bits = ceil_log2(mul_const.as_int());
 	// make sure the multiplication never wraps around
 	if (GetSize(shift_amount) + log2scale < factor_bits + GetSize(mul_din))
 		reject;
+
+	// Overlapping selections (output wider than the stride, e.g.
+	// foo[s*34+:40]) cannot be expressed by re-spacing A. Select the
+	// words directly with a $bmux on the multiplier input instead, so
+	// the multiplier (which could otherwise end up in a DSP) goes away.
+	if (GetSize(port(shift, \Y)) > mul_const.as_int()) {
+		int width = GetSize(port(shift, \Y));
+		long long stride = mul_const.as_int();
+		int sel_width = GetSize(mul_din);
+		if (sel_width > 16)
+			reject;
+		long long ways = 1LL << sel_width;
+		SigSpec A = port(shift, \A);
+		int a_width = GetSize(A);
+		int max_ratio = module->design->scratchpad_get_int("peepopt.shiftmul.max_data_multiple", 2);
+		// count the ways that select at least one bit of A
+		long long live_ways = std::min(ways, (a_width + stride - 1) / stride);
+		if (live_ways < 2 || live_ways * (long long)width > (long long)max_ratio * std::max(a_width, width))
+			reject;
+
+		bool a_signed = !shift->type.in($shiftx) && param(shift, \A_SIGNED).as_bool();
+		int extended_a_width = a_signed ? std::max(a_width, width) : a_width;
+		State fill = shift->type.in($shiftx) ? State::Sx : State::S0;
+		SigSpec bmux_a;
+		for (long long m = 0; m < ways; m++)
+			for (int b = 0; b < width; b++) {
+				long long idx = m * stride + b;
+				if (idx < a_width)
+					bmux_a.append(A[idx]);
+				else if (idx < extended_a_width)
+					bmux_a.append(A.back());
+				else
+					bmux_a.append(fill);
+			}
+
+		did_something = true;
+		log("right shiftmul pattern in %s: shift=%s, mul=%s (overlapping, $bmux with %lld ways)\n", module, shift, mul, ways);
+		module->addBmux(NEW_ID, bmux_a, mul_din, port(shift, \Y));
+		autoremove(shift);
+		accept;
+	}
 
 	did_something = true;
 	log("right shiftmul pattern in %s: shift=%s, mul=%s\n", module, shift, mul);
