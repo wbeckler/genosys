@@ -38,15 +38,23 @@ generators). "gen" for code generation, "osys" for Yosys; pronounced *genesis*.
 | `wbeckler/xilinx-dsp48e2-sim` | DSP48E2 simulation model in `cells_sim.v` (UG579; aligned with the Apache-2.0 Xilinx unisim model incl. U/V partial products, W mux, SIMD, wide XOR, pattern detect + AUTORESET, IS_*_INVERTED) | 1480 random configs agree cycle-for-cycle with the DSP48E1 model on their common space (`scaled/dsp48e2/e1e2.py`); directed tests for E2-only features (`tests/arch/xilinx/dsp48e2.sh`); xcup dspfuzz 1000/1000 (was 931 unsimulatable) |
 | `wbeckler/xilinx-dsp48e2-pack` | `xilinx_dsp` packs A/B/D/M/P registers, pre-adder, post-adder/accumulator, CREG and PCOUT/ACOUT/BCOUT cascades into DSP48E2 (xcu/xcup); before, nothing was packed | xcup 2000/2000 match RTL; at equal DSP count FF -64%, LUT -72%, CARRY8 -75%, no design worse; xc7 unchanged |
 | `wbeckler/xilinx-dsp48e2-xcheck` | Differential co-simulation of the DSP48E2 model against the Apache-2.0 Xilinx unisim DSP48E2 over the full E2 configuration space (`scaled/dsp48e2/e2xil.py`; unisim sources not vendored, pass their path) | 2000/2000 random configurations x 500 cycles agree on every output bit the reference defines |
+| `wbeckler/xilinx-widemux-fix` | `synth_xilinx -widemux` produced wrong logic for `in[sel*8 +: W]` near the top of the bus and for strided selects (`$__XILINX_SHIFTX` bit-blast range, >16-input group select bits, A wider than 2**B) | upstream fails 26/60 random `$shiftx` shapes; all 180 shape/option combos + 40 large ones + all parser kernels prove with SAT; `tests/arch/xilinx/widemux_shiftx.ys` fails upstream |
+| `wbeckler/xilinx-parser-qor` | peepopt: overlapping strided select (`in[sel*34 +: 40]`, #3873 W2>W) becomes a `$bmux` on `sel` (the multiply used to land in a DSP48E2); `-widemux` maps `$bmux` onto MUXF7/F8; `scaled/parserqor` benchmark | stride_select W=40: 1636 LUT + 1 DSP, depth 8 -> 209 LUT, depth 3 |
+| `wbeckler/xilinx-widemux-default` | `-widemux 4` is the default on xcu/xcup (`-widemux 0` disables; xc7 unchanged) | 13 parser kernels: 8924 -> 3066 LUT (-66%); picorv32 -3..-8% LUT; dspfuzz xcup 1000/1000, resources identical |
 
-Upstream issues addressed: #6311, #6312, #6252, #6046 (and the bug fixed by open PR #6138).
+Upstream issues addressed: #6311, #6312, #6252, #6046 (and the bug fixed by open PR #6138); #3873/PR #3880 (overlapping strided selects). #3893 does not apply to synth_xilinx: it already runs `opt_expr -mux_undef` before abc9.
 
 ### Next, in order
 
-1. **Parser-shaped QoR.** `$shiftx`/`$bmux`/`$pmux` mapping (#3893, #878, PR #3880):
-   field extraction at variable offsets is the core of a feed handler.
-2. **Vivado hand-off.** `write_edif` → Vivado implementation for US+ (#2053, #568);
-   measure post-route Fmax against Vivado's own synthesis.
+1. **Vivado hand-off.** `write_edif` → Vivado implementation for US+ (#2053, #568);
+   measure post-route Fmax against Vivado's own synthesis. Also needed to
+   judge the wide-mux depth trade-off (msgtype_field: 345 -> 166 LUT but
+   4 -> 7 cells deep, counting MUXF7/F8 levels).
+2. **Remaining parser QoR gaps** (`scaled/parserqor`): `byte_shift`
+   (`in >> {sel,3'b0}`, 917 LUT; a radix-4 shifter should be ~640) and
+   `bit_extract` 64->32 (228 LUT; the wide-mux threshold
+   `(A_WIDTH+Y_WIDTH-1)/Y_WIDTH` skips it). Index multiplies that peepopt
+   does not fold still go to DSP48E2s.
 3. **Pattern detector.** Overflow matching compares a narrow `$ge` with
    48-bit P; add overflow patterns to the fuzzer, then verify.
 4. **DSP48E2 timing data** (specify blocks / abc9 box) so `-abc9` sees DSP
