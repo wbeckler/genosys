@@ -27,7 +27,7 @@ generators). "gen" for code generation, "osys" for Yosys; pronounced *genesis*.
 3. **Vivado hand-off.** EDIF out of Yosys into Vivado for US+ implementation: #2053, #568.
 4. **Measurement.** Reproducible LUT/FF/DSP/BRAM and post-route Fmax reports per design.
 
-## Status (2026-11-07)
+## Status (2026-11-08)
 
 ### Done
 
@@ -35,22 +35,28 @@ generators). "gen" for code generation, "osys" for Yosys; pronounced *genesis*.
 |---|---|---|
 | `wbeckler/dspfuzz` | RTL-vs-netlist co-simulation harness for DSP packing (`scaled/dspfuzz`) | finds 246 wrong/crashing designs out of 1700 on upstream 0.70+360 (xc7) |
 | `wbeckler/xilinx-dsp-correctness` | `xilinx_dsp` packs only what preserves function: zero-reset check, sign-extension tail rewiring, exact post-adder (interval arithmetic), wrap-aware pre-adder, cascade guard, #6046 crash | 1700/1700 pass; `tests/arch/xilinx/dsp_genosys_correctness.ys` proves #6311/#6312/#6252/PR6138/pre-adder cases with `equiv_opt`; resource use unchanged on 1699/1700 |
+| `wbeckler/xilinx-dsp48e2-sim` | DSP48E2 simulation model in `cells_sim.v` (UG579; aligned with the Apache-2.0 Xilinx unisim model incl. U/V partial products, W mux, SIMD, wide XOR, pattern detect + AUTORESET, IS_*_INVERTED) | 1480 random configs agree cycle-for-cycle with the DSP48E1 model on their common space (`scaled/dsp48e2/e1e2.py`); directed tests for E2-only features (`tests/arch/xilinx/dsp48e2.sh`); xcup dspfuzz 1000/1000 (was 931 unsimulatable) |
+| `wbeckler/xilinx-dsp48e2-pack` | `xilinx_dsp` packs A/B/D/M/P registers, pre-adder, post-adder/accumulator, CREG and PCOUT/ACOUT/BCOUT cascades into DSP48E2 (xcu/xcup); before, nothing was packed | xcup 2000/2000 match RTL; at equal DSP count FF -64%, LUT -72%, CARRY8 -75%, no design worse; xc7 unchanged |
 
 Upstream issues addressed: #6311, #6312, #6252, #6046 (and the bug fixed by open PR #6138).
 
 ### Next, in order
 
-1. **DSP48E2 simulation model.** `cells_sim.v` has none (only a blackbox in
-   `cells_xtra.v`), so no UltraScale/US+ netlist with a DSP can be simulated or
-   formally checked with Yosys's own libraries. Prerequisite for everything below.
-2. **DSP48E2 packing.** `xilinx_dsp -family xcu/xcup` packs nothing (no A/B/M/P
-   registers, pre-adder, post-adder, accumulator, cascade). Every pipeline
-   register stays in fabric: a large Fmax/LUT loss on the target family.
-3. **Parser-shaped QoR.** `$shiftx`/`$bmux`/`$pmux` mapping (#3893, #878, PR #3880):
+1. **Cross-check the DSP48E2 model against Xilinx's own unisim model** by
+   co-simulation (needs running the downloaded Apache-2.0 unisim sources in
+   iverilog; not yet done). Today the E2-only paths (27-bit operands, W mux,
+   PREADDINSEL=B, wide XOR, AUTORESET, CARRYCASCOUT/MULTSIGNOUT during
+   multiplies) are checked only against UG579-derived expectations.
+2. **Parser-shaped QoR.** `$shiftx`/`$bmux`/`$pmux` mapping (#3893, #878, PR #3880):
    field extraction at variable offsets is the core of a feed handler.
-4. **Vivado hand-off.** `write_edif` → Vivado implementation for US+ (#2053, #568);
+3. **Vivado hand-off.** `write_edif` → Vivado implementation for US+ (#2053, #568);
    measure post-route Fmax against Vivado's own synthesis.
-5. **Pattern detector exactness.** Overflow matching compares a narrow `$ge` with
-   48-bit P; not yet covered by the fuzzer.
+4. **Pattern detector.** Overflow matching compares a narrow `$ge` with
+   48-bit P; add overflow patterns to the fuzzer, then verify.
+5. **DSP48E2 timing data** (specify blocks / abc9 box) so `-abc9` sees DSP
+   delays on US+, as it does for DSP48E1.
 6. Small known conservatism: post-adder folding is declined when the pre-adder
    is not folded and the operand range cannot be proven (1 in 1000 cases).
+7. `equiv_opt` cannot prove pipelined DSP packings (DSP state is not the RTL
+   state) and multipliers above ~6x6 time out; co-simulation is the check
+   there. A sequential equivalence flow (e.g. via SBY) would close this.
