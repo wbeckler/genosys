@@ -4,3 +4,5 @@
 /test_dsp48e2
 /test_macc_xcup
 /macc_uut_xcup.v
+/test_dsp48e2_pack
+/dsp48e2_pack_gold.v

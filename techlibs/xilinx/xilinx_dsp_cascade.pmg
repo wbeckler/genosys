@@ -64,7 +64,7 @@ endcode
 //     (controlled by OPMODE[3:2] for DSP48A*, by OPMODE[6:4] for DSP48E1)
 //     set to zero and (b) doesn't already use the 'PCOUT' port
 match first
-	select (first->type.in(\DSP48A, \DSP48A1) && port(first, \OPMODE, Const(0, 8)).extract(2,2) == Const::from_string("00")) || (first->type.in(\DSP48E1) && port(first, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("000"))
+	select (first->type.in(\DSP48A, \DSP48A1) && port(first, \OPMODE, Const(0, 8)).extract(2,2) == Const::from_string("00")) || (first->type.in(\DSP48E1, \DSP48E2) && port(first, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("000"))
 	select nusers(port(first, \PCOUT, SigSpec())) <= 1
 	select !dsp_p_inexact(first)
 endmatch
@@ -103,7 +103,7 @@ finally
 						opmode[3] = State::S0;
 						opmode[2] = State::S1;
 					}
-					else if (dsp->type.in(\DSP48E1)) {
+					else if (dsp->type.in(\DSP48E1, \DSP48E2)) {
 						if (P == 17)
 							opmode[6] = State::S1;
 						else if (P == 0)
@@ -125,7 +125,7 @@ finally
 					add_siguser(cascade, dsp_pcin);
 					add_siguser(cascade, dsp);
 
-					if (dsp->type.in(\DSP48E1))
+					if (dsp->type.in(\DSP48E1, \DSP48E2))
 						dsp->setParam(\ACASCREG, AREG);
 					dsp_pcin->setParam(\A_INPUT, Const("CASCADE"));
 
@@ -149,7 +149,7 @@ finally
 					add_siguser(cascade, dsp_pcin);
 					add_siguser(cascade, dsp);
 
-					if (dsp->type.in(\DSP48E1)) {
+					if (dsp->type.in(\DSP48E1, \DSP48E2)) {
 						dsp->setParam(\BCASCREG, BREG);
 						// According to UG389 p13 [https://www.xilinx.com/support/documentation/user_guides/ug389.pdf]
 						// "The attribute is only used by place and route tools and
@@ -187,8 +187,8 @@ arg next
 //       driven by the 'P' output of the previous DSP cell, and (c) has its
 //       'PCIN' port unused
 match nextP
-	select !nextP->type.in(\DSP48E1) || !param(nextP, \CREG).as_bool()
-	select (nextP->type.in(\DSP48A, \DSP48A1) && port(nextP, \OPMODE, Const(0, 8)).extract(2,2) == Const::from_string("11")) || (nextP->type.in(\DSP48E1) && port(nextP, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("011"))
+	select !nextP->type.in(\DSP48E1, \DSP48E2) || !param(nextP, \CREG).as_bool()
+	select (nextP->type.in(\DSP48A, \DSP48A1) && port(nextP, \OPMODE, Const(0, 8)).extract(2,2) == Const::from_string("11")) || (nextP->type.in(\DSP48E1, \DSP48E2) && port(nextP, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("011"))
 	select nusers(port(nextP, \C, SigSpec())) > 1
 	select nusers(port(nextP, \PCIN, SigSpec())) == 0
 	select !dsp_p_inexact(nextP)
@@ -200,7 +200,7 @@ endmatch
 //       by the 'P' output of the previous DSP cell right-shifted by 17 bits
 match nextP_shift17
 	if !nextP
-	select nextP_shift17->type.in(\DSP48E1)
+	select nextP_shift17->type.in(\DSP48E1, \DSP48E2)
 	select !param(nextP_shift17, \CREG).as_bool()
 	select port(nextP_shift17, \OPMODE, Const(0, 7)).extract(4,3) == Const::from_string("011")
 	select nusers(port(nextP_shift17, \C, SigSpec())) > 1
@@ -240,7 +240,7 @@ endcode
 //     TODO: Check for two levels of flops, instead of just one
 code argQ clock AREG
 	AREG = -1;
-	if (next && next->type.in(\DSP48E1)) {
+	if (next && next->type.in(\DSP48E1, \DSP48E2)) {
 		Cell *prev = std::get<0>(chain.back());
 
 		if (param(next, \A_INPUT).decode_string() == "DIRECT" &&
@@ -287,7 +287,7 @@ code argQ clock BREG
 				port(next, \BCIN, SigSpec()).is_fully_zero() &&
 				nusers(port(prev, \BCOUT, SigSpec())) <= 1) {
 			if ((next->type.in(\DSP48A, \DSP48A1) && param(prev, \B0REG) == 0 && param(prev, \B1REG) == 0) ||
-				(next->type.in(\DSP48E1) && param(prev, \BREG) == 0)) {
+				(next->type.in(\DSP48E1, \DSP48E2) && param(prev, \BREG) == 0)) {
 				if (port(prev, \B) == port(next, \B))
 					BREG = 0;
 			}
@@ -303,7 +303,7 @@ code argQ clock BREG
 					IdString CEB;
 					if (next->type.in(\DSP48A, \DSP48A1))
 						CEB = \CEB;
-					else if (next->type.in(\DSP48E1)) {
+					else if (next->type.in(\DSP48E1, \DSP48E2)) {
 						if (param(prev, \BREG) == 1)
 							CEB = \CEB2;
 						else if (param(prev, \BREG) == 2)

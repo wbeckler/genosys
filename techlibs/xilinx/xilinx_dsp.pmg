@@ -73,9 +73,9 @@ udata <SigSpec> dffD dffQ
 udata <SigBit> dffclock
 udata <Cell*> dff
 
-// (1) Starting from a DSP48E1 cell
+// (1) Starting from a DSP48E1 or DSP48E2 cell
 match dsp
-	select dsp->type.in(\DSP48E1)
+	select dsp->type.in(\DSP48E1, \DSP48E2)
 endmatch
 
 code sigA sigB sigC sigD sigM clock aLo aHi bLo bHi prodModBits
@@ -142,19 +142,21 @@ endcode
 match preAdd
 	if sigD.empty() || sigD.is_fully_zero()
 	// Ensure that preAdder not already used
-	if param(dsp, \USE_DPORT).decode_string() == "FALSE"
+	if !dsp_preadd_used(dsp)
 	if port(dsp, \INMODE, Const(0, 5)).is_fully_zero()
 
 	select preAdd->type.in($add)
-	// Output has to be 25 bits or less
-	select GetSize(port(preAdd, \Y)) <= 25
+	// Output has to fit the pre-adder (25 bits, 27 on DSP48E2)
+	select GetSize(port(preAdd, \Y)) <= 27
+	filter GetSize(port(preAdd, \Y)) <= dsp_preadd_width(dsp)
 	select nusers(port(preAdd, \Y)) == 2
 	choice <IdString> AB {\A, \B}
 	// A port has to be 30 bits or less
 	select GetSize(port(preAdd, AB)) <= 30
 	define <IdString> BA (AB == \A ? \B : \A)
-	// D port has to be 25 bits or less
-	select GetSize(port(preAdd, BA)) <= 25
+	// D port has to fit the pre-adder
+	select GetSize(port(preAdd, BA)) <= 27
+	filter GetSize(port(preAdd, BA)) <= dsp_preadd_width(dsp)
 	index <SigSpec> port(preAdd, \Y) === sigA
 	// The DSP pre-adder does not wrap at the width of Y
 	filter preadd_exact(sigmap, preAdd, port(dsp, \A)) || GetSize(sigM) <= GetSize(port(preAdd, \Y))
@@ -178,15 +180,17 @@ endcode
 match preSub
 	if sigD.empty() || sigD.is_fully_zero()
 	// Ensure that preAdder not already used
-	if param(dsp, \USE_DPORT).decode_string() == "FALSE"
+	if !dsp_preadd_used(dsp)
 	if port(dsp, \INMODE, Const(0, 5)).is_fully_zero()
 
 	select preSub->type.in($sub)
-	// Output has to be 25 bits or less
-	select GetSize(port(preSub, \Y)) <= 25
+	// Output has to fit the pre-adder (25 bits, 27 on DSP48E2)
+	select GetSize(port(preSub, \Y)) <= 27
+	filter GetSize(port(preSub, \Y)) <= dsp_preadd_width(dsp)
 	select nusers(port(preSub, \Y)) == 2
-	// D port has to be 25 bits or less
-	select GetSize(port(preSub, \A)) <= 25
+	// D port has to fit the pre-adder
+	select GetSize(port(preSub, \A)) <= 27
+	filter GetSize(port(preSub, \A)) <= dsp_preadd_width(dsp)
 	// A port has to be 30 bits or less
 	select GetSize(port(preSub, \B)) <= 30
 	index <SigSpec> port(preSub, \Y) === sigA

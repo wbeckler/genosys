@@ -36,6 +36,27 @@ static bool dsp_p_inexact(Cell *cell)
 	return inexact_p_dsps.count(cell) > 0;
 }
 
+// DSP48E1 (7-series) and DSP48E2 (UltraScale/UltraScale+) differ, for the
+// purposes of packing, only in the pre-adder/multiplier operand width and in
+// how the pre-adder is routed to the multiplier.
+static bool dsp_is_e2(const Cell *cell)
+{
+	return cell->type == ID(DSP48E2);
+}
+
+static int dsp_preadd_width(const Cell *cell)
+{
+	return dsp_is_e2(cell) ? 27 : 25;
+}
+
+static bool dsp_preadd_used(const Cell *cell)
+{
+	if (dsp_is_e2(cell))
+		return cell->getParam(ID(AMULTSEL)).decode_string() == "AD" ||
+				cell->getParam("\\BMULTSEL").decode_string() == "AD";
+	return cell->getParam(ID(USE_DPORT)).decode_string() == "TRUE";
+}
+
 // Range of the two's complement value of a DSP operand port, given that
 // only its low n bits are significant (the rest being a sign or constant
 // extension, see unextend()).
@@ -131,7 +152,7 @@ static bool postadd_product_exact(const SigMap &sigmap, Cell *add, IdString AB, 
 	return false;
 }
 
-// The DSP pre-adder computes the exact (25-bit) sum/difference of its
+// The DSP pre-adder computes the exact (25/27-bit) sum/difference of its
 // operands, extended per the $add/$sub signedness, and the multiplier then
 // treats it as signed.  The RTL instead multiplies Y, truncated to its width
 // and extended into the DSP A port either by sign or by zero.  Only fold when
@@ -512,7 +533,7 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 		if (st.sigA == preAdder->getPort(ID::B))
 			std::swap(A_SIGNED, D_SIGNED);
 		st.sigA.extend_u0(30, A_SIGNED);
-		st.sigD.extend_u0(25, D_SIGNED);
+		st.sigD.extend_u0(dsp_preadd_width(cell), D_SIGNED);
 		cell->setPort(ID::A, st.sigA);
 		cell->setPort(ID::D, st.sigD);
 		if (preAdder->type == ID($add))
@@ -531,7 +552,10 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			cell->setParam(ID(ADREG), 1);
 		}
 
-		cell->setParam(ID(USE_DPORT), Const("TRUE"));
+		if (dsp_is_e2(cell))
+			cell->setParam(ID(AMULTSEL), Const("AD"));
+		else
+			cell->setParam(ID(USE_DPORT), Const("TRUE"));
 
 		pm.autoremove(preAdder);
 	}
@@ -1035,7 +1059,7 @@ struct XilinxDspPass : public Pass {
 
 			// Match for all features ([ABDMP][12]?REG, pre-adder,
 			// post-adder, pattern detector, etc.) except for CREG
-			if (family == "xc7") {
+			if (family == "xc7" || family == "xcu") {
 				xilinx_dsp_pm pm(module, module->selected_cells());
 				pm.run_xilinx_dsp_pack(xilinx_dsp_pack);
 			} else if (family == "xc6s" || family == "xc3sda") {
