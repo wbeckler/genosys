@@ -1,0 +1,12 @@
+# Formal check of an UltraScale+ DSP netlist using the DSP48E2 simulation model
+read_verilog <<EOT
+module top(input clk, input signed [5:0] a, input signed [4:0] b, input signed [10:0] c, output signed [11:0] y, output reg signed [11:0] q);
+  assign y = a * b + c;
+  always @(posedge clk) q <= q + a * b;
+endmodule
+EOT
+proc
+equiv_opt -assert -async2sync -map +/xilinx/cells_sim.v synth_xilinx -family xcup -noiopad
+design -load postopt
+cd top
+select -assert-min 1 t:DSP48E2

@@ -1,3 +1,6 @@
 /run-test.mk
 /*_uut.v
 /test_macc
+/test_dsp48e2
+/test_macc_xcup
+/macc_uut_xcup.v
