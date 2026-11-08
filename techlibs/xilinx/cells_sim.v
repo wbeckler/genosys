@@ -3951,7 +3951,485 @@ module DSP48E1 (
 
 endmodule
 
-// TODO: DSP48E2 (Ultrascale).
+// UltraScale / UltraScale+.
+//
+// Behaviour follows UG579 (UltraScale Architecture DSP Slice) and is
+// bit-for-bit aligned with the open-source (Apache-2.0) Xilinx unisim model,
+// including the multiplier's two partial products (U/V), the W/X/Y/Z
+// carry-save ALU, SIMD carry splitting, CARRYOUT/CARRYCASCOUT/MULTSIGNOUT,
+// wide XOR, pattern detection with AUTORESET, and the IS_*_INVERTED
+// parameters. Timing (specify) data is not modelled yet.
+
+module DSP48E2 (
+    output [29:0] ACOUT,
+    output [17:0] BCOUT,
+    output CARRYCASCOUT,
+    output [3:0] CARRYOUT,
+    output MULTSIGNOUT,
+    output OVERFLOW,
+    output [47:0] P,
+    output PATTERNBDETECT,
+    output PATTERNDETECT,
+    output [47:0] PCOUT,
+    output UNDERFLOW,
+    output [7:0] XOROUT,
+    input [29:0] A,
+    input [29:0] ACIN,
+    (* invertible_pin = "IS_ALUMODE_INVERTED" *)
+    input [3:0] ALUMODE,
+    input [17:0] B,
+    input [17:0] BCIN,
+    input [47:0] C,
+    input CARRYCASCIN,
+    (* invertible_pin = "IS_CARRYIN_INVERTED" *)
+    input CARRYIN,
+    input [2:0] CARRYINSEL,
+    input CEA1,
+    input CEA2,
+    input CEAD,
+    input CEALUMODE,
+    input CEB1,
+    input CEB2,
+    input CEC,
+    input CECARRYIN,
+    input CECTRL,
+    input CED,
+    input CEINMODE,
+    input CEM,
+    input CEP,
+    (* clkbuf_sink *)
+    (* invertible_pin = "IS_CLK_INVERTED" *)
+    input CLK,
+    input [26:0] D,
+    (* invertible_pin = "IS_INMODE_INVERTED" *)
+    input [4:0] INMODE,
+    input MULTSIGNIN,
+    (* invertible_pin = "IS_OPMODE_INVERTED" *)
+    input [8:0] OPMODE,
+    input [47:0] PCIN,
+    (* invertible_pin = "IS_RSTA_INVERTED" *)
+    input RSTA,
+    (* invertible_pin = "IS_RSTALLCARRYIN_INVERTED" *)
+    input RSTALLCARRYIN,
+    (* invertible_pin = "IS_RSTALUMODE_INVERTED" *)
+    input RSTALUMODE,
+    (* invertible_pin = "IS_RSTB_INVERTED" *)
+    input RSTB,
+    (* invertible_pin = "IS_RSTC_INVERTED" *)
+    input RSTC,
+    (* invertible_pin = "IS_RSTCTRL_INVERTED" *)
+    input RSTCTRL,
+    (* invertible_pin = "IS_RSTD_INVERTED" *)
+    input RSTD,
+    (* invertible_pin = "IS_RSTINMODE_INVERTED" *)
+    input RSTINMODE,
+    (* invertible_pin = "IS_RSTM_INVERTED" *)
+    input RSTM,
+    (* invertible_pin = "IS_RSTP_INVERTED" *)
+    input RSTP
+);
+    parameter integer ACASCREG = 1;
+    parameter integer ADREG = 1;
+    parameter integer ALUMODEREG = 1;
+    parameter AMULTSEL = "A";
+    parameter integer AREG = 1;
+    parameter AUTORESET_PATDET = "NO_RESET";
+    parameter AUTORESET_PRIORITY = "RESET";
+    parameter A_INPUT = "DIRECT";
+    parameter integer BCASCREG = 1;
+    parameter BMULTSEL = "B";
+    parameter integer BREG = 1;
+    parameter B_INPUT = "DIRECT";
+    parameter integer CARRYINREG = 1;
+    parameter integer CARRYINSELREG = 1;
+    parameter integer CREG = 1;
+    parameter integer DREG = 1;
+    parameter integer INMODEREG = 1;
+    parameter [3:0] IS_ALUMODE_INVERTED = 4'b0000;
+    parameter [0:0] IS_CARRYIN_INVERTED = 1'b0;
+    parameter [0:0] IS_CLK_INVERTED = 1'b0;
+    parameter [4:0] IS_INMODE_INVERTED = 5'b00000;
+    parameter [8:0] IS_OPMODE_INVERTED = 9'b000000000;
+    parameter [0:0] IS_RSTALLCARRYIN_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTALUMODE_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTA_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTB_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTCTRL_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTC_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTD_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTINMODE_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTM_INVERTED = 1'b0;
+    parameter [0:0] IS_RSTP_INVERTED = 1'b0;
+    parameter [47:0] MASK = 48'h3FFFFFFFFFFF;
+    parameter integer MREG = 1;
+    parameter integer OPMODEREG = 1;
+    parameter [47:0] PATTERN = 48'h000000000000;
+    parameter PREADDINSEL = "A";
+    parameter integer PREG = 1;
+    parameter [47:0] RND = 48'h000000000000;
+    parameter SEL_MASK = "MASK";
+    parameter SEL_PATTERN = "PATTERN";
+    parameter USE_MULT = "MULTIPLY";
+    parameter USE_PATTERN_DETECT = "NO_PATDET";
+    parameter USE_SIMD = "ONE48";
+    parameter USE_WIDEXOR = "FALSE";
+    parameter XORSIMD = "XOR24_48_96";
+
+    initial begin
+`ifndef YOSYS
+        if (AREG != 0 && AREG != 1 && AREG != 2) $fatal(1, "Invalid AREG value");
+        if (BREG != 0 && BREG != 1 && BREG != 2) $fatal(1, "Invalid BREG value");
+        if ((AREG == 2) ? (ACASCREG == 0) : (ACASCREG != AREG)) $fatal(1, "Invalid ACASCREG value for this AREG");
+        if ((BREG == 2) ? (BCASCREG == 0) : (BCASCREG != BREG)) $fatal(1, "Invalid BCASCREG value for this BREG");
+        if (AMULTSEL != "A" && AMULTSEL != "AD") $fatal(1, "Invalid AMULTSEL value");
+        if (BMULTSEL != "B" && BMULTSEL != "AD") $fatal(1, "Invalid BMULTSEL value");
+        if (PREADDINSEL != "A" && PREADDINSEL != "B") $fatal(1, "Invalid PREADDINSEL value");
+        if (USE_MULT != "MULTIPLY" && USE_MULT != "DYNAMIC" && USE_MULT != "NONE") $fatal(1, "Invalid USE_MULT value");
+        if (USE_SIMD != "ONE48" && USE_SIMD != "TWO24" && USE_SIMD != "FOUR12") $fatal(1, "Invalid USE_SIMD value");
+        if (USE_SIMD != "ONE48" && USE_MULT != "NONE") $fatal(1, "USE_MULT must be NONE when USE_SIMD is not ONE48");
+        if (SEL_MASK != "MASK" && SEL_MASK != "C" && SEL_MASK != "ROUNDING_MODE1" && SEL_MASK != "ROUNDING_MODE2") $fatal(1, "Invalid SEL_MASK value");
+        if (SEL_PATTERN != "PATTERN" && SEL_PATTERN != "C") $fatal(1, "Invalid SEL_PATTERN value");
+        if (AUTORESET_PATDET != "NO_RESET" && AUTORESET_PATDET != "RESET_MATCH" && AUTORESET_PATDET != "RESET_NOT_MATCH") $fatal(1, "Invalid AUTORESET_PATDET value");
+`endif
+    end
+
+    // Optional input inversion
+    wire       clk          = CLK ^ IS_CLK_INVERTED;
+    wire [3:0] ALUMODE_i    = ALUMODE ^ IS_ALUMODE_INVERTED;
+    wire       CARRYIN_i    = CARRYIN ^ IS_CARRYIN_INVERTED;
+    wire [4:0] INMODE_i     = INMODE ^ IS_INMODE_INVERTED;
+    wire [8:0] OPMODE_i     = OPMODE ^ IS_OPMODE_INVERTED;
+    wire       RSTA_i       = RSTA ^ IS_RSTA_INVERTED;
+    wire       RSTB_i       = RSTB ^ IS_RSTB_INVERTED;
+    wire       RSTC_i       = RSTC ^ IS_RSTC_INVERTED;
+    wire       RSTD_i       = RSTD ^ IS_RSTD_INVERTED;
+    wire       RSTM_i       = RSTM ^ IS_RSTM_INVERTED;
+    wire       RSTP_i       = RSTP ^ IS_RSTP_INVERTED;
+    wire       RSTCTRL_i    = RSTCTRL ^ IS_RSTCTRL_INVERTED;
+    wire       RSTINMODE_i  = RSTINMODE ^ IS_RSTINMODE_INVERTED;
+    wire       RSTALUMODE_i = RSTALUMODE ^ IS_RSTALUMODE_INVERTED;
+    wire       RSTALLCARRYIN_i = RSTALLCARRYIN ^ IS_RSTALLCARRYIN_INVERTED;
+
+    localparam SIMD48 = (USE_SIMD == "ONE48");
+    localparam SIMD12 = (USE_SIMD == "FOUR12");
+    localparam MULT_ON = (USE_MULT != "NONE");
+    // The D and AD registers are not used when the pre-adder cannot reach the multiplier.
+    localparam PREADD_USED = MULT_ON && (AMULTSEL == "AD" || BMULTSEL == "AD");
+
+    // A and B input registers
+    wire [29:0] A_in = (A_INPUT == "CASCADE") ? ACIN : A;
+    wire [17:0] B_in = (B_INPUT == "CASCADE") ? BCIN : B;
+    reg  [29:0] A1q, A2q;
+    reg  [17:0] B1q, B2q;
+    generate
+        if (AREG != 0) begin
+            initial A1q = 30'b0;
+            initial A2q = 30'b0;
+            always @(posedge clk)
+                if (RSTA_i) begin
+                    A1q <= 30'b0;
+                    A2q <= 30'b0;
+                end else begin
+                    if (CEA1) A1q <= A_in;
+                    if (CEA2) A2q <= (AREG == 2) ? A1q : A_in;
+                end
+        end
+        if (BREG != 0) begin
+            initial B1q = 18'b0;
+            initial B2q = 18'b0;
+            always @(posedge clk)
+                if (RSTB_i) begin
+                    B1q <= 18'b0;
+                    B2q <= 18'b0;
+                end else begin
+                    if (CEB1) B1q <= B_in;
+                    if (CEB2) B2q <= (BREG == 2) ? B1q : B_in;
+                end
+        end
+    endgenerate
+    // With AREG/BREG = 0 the first-stage register is held in reset.
+    wire [29:0] A1r = (AREG != 0) ? A1q : 30'b0;
+    wire [29:0] A2r = (AREG != 0) ? A2q : A_in;
+    wire [17:0] B1r = (BREG != 0) ? B1q : 18'b0;
+    wire [17:0] B2r = (BREG != 0) ? B2q : B_in;
+
+    assign ACOUT = (ACASCREG == AREG) ? A2r : A1r;
+    assign BCOUT = (BCASCREG == BREG) ? B2r : B1r;
+
+    // C register
+    reg [47:0] Cq;
+    generate
+        if (CREG == 1) begin
+            initial Cq = 48'b0;
+            always @(posedge clk) if (RSTC_i) Cq <= 48'b0; else if (CEC) Cq <= C;
+        end
+    endgenerate
+    wire [47:0] Cr = (CREG == 1) ? Cq : C;
+
+    // Control registers
+    reg [4:0] INMODEq;
+    reg [8:0] OPMODEq;
+    reg [3:0] ALUMODEq;
+    reg [2:0] CARRYINSELq;
+    reg       CARRYINq;
+    generate
+        if (INMODEREG == 1) begin
+            initial INMODEq = 5'b0;
+            always @(posedge clk) if (RSTINMODE_i) INMODEq <= 5'b0; else if (CEINMODE) INMODEq <= INMODE_i;
+        end
+        if (OPMODEREG == 1) begin
+            initial OPMODEq = 9'b0;
+            always @(posedge clk) if (RSTCTRL_i) OPMODEq <= 9'b0; else if (CECTRL) OPMODEq <= OPMODE_i;
+        end
+        if (CARRYINSELREG == 1) begin
+            initial CARRYINSELq = 3'b0;
+            always @(posedge clk) if (RSTCTRL_i) CARRYINSELq <= 3'b0; else if (CECTRL) CARRYINSELq <= CARRYINSEL;
+        end
+        if (ALUMODEREG == 1) begin
+            initial ALUMODEq = 4'b0;
+            always @(posedge clk) if (RSTALUMODE_i) ALUMODEq <= 4'b0; else if (CEALUMODE) ALUMODEq <= ALUMODE_i;
+        end
+        if (CARRYINREG == 1) begin
+            initial CARRYINq = 1'b0;
+            always @(posedge clk) if (RSTALLCARRYIN_i) CARRYINq <= 1'b0; else if (CECARRYIN) CARRYINq <= CARRYIN_i;
+        end
+    endgenerate
+    wire [4:0] INMODEr     = (INMODEREG == 1)     ? INMODEq     : INMODE_i;
+    wire [8:0] OPMODEr     = (OPMODEREG == 1)     ? OPMODEq     : OPMODE_i;
+    wire [2:0] CARRYINSELr = (CARRYINSELREG == 1) ? CARRYINSELq : CARRYINSEL;
+    wire [3:0] ALUMODEr    = (ALUMODEREG == 1)    ? ALUMODEq    : ALUMODE_i;
+    wire       CARRYINr    = (CARRYINREG == 1)    ? CARRYINq    : CARRYIN_i;
+
+    // Multiplier operand selection (INMODE) and pre-adder
+    wire [26:0] A_sel = INMODEr[0] ? A1r[26:0] : A2r[26:0];
+    wire [17:0] B_sel = INMODEr[4] ? B1r : B2r;
+    wire [26:0] A_gated = (PREADDINSEL == "A" && INMODEr[1]) ? 27'b0 : A_sel;
+    wire [17:0] B_gated = (PREADDINSEL == "B" && INMODEr[1]) ? 18'b0 : B_sel;
+    wire [26:0] preadd_ab = (PREADDINSEL == "B") ? {{9{B_gated[17]}}, B_gated} : A_gated;
+
+    reg [26:0] Dq, ADq;
+    generate
+        if (DREG == 1 && PREADD_USED) begin
+            initial Dq = 27'b0;
+            always @(posedge clk) if (RSTD_i) Dq <= 27'b0; else if (CED) Dq <= D;
+        end
+    endgenerate
+    wire [26:0] Dr = (DREG == 1 && PREADD_USED) ? Dq : D;
+
+    wire [26:0] D_gated = INMODEr[2] ? Dr : 27'b0;
+    wire [26:0] AD_result = INMODEr[3] ? (D_gated - preadd_ab) : (D_gated + preadd_ab);
+    generate
+        if (ADREG == 1 && PREADD_USED) begin
+            initial ADq = 27'b0;
+            always @(posedge clk) if (RSTD_i) ADq <= 27'b0; else if (CEAD) ADq <= AD_result;
+        end
+    endgenerate
+    wire [26:0] ADr = (ADREG == 1 && PREADD_USED) ? ADq : AD_result;
+
+    // 27x18 signed multiplier, delivered as two partial products U and V
+    // whose sign-extended (U) and zero-extended (V) sum is the product.
+    wire signed [26:0] A_MULT = (AMULTSEL == "AD") ? ADr : A_gated;
+    wire signed [17:0] B_MULT = (BMULTSEL == "AD") ? ADr[17:0] : B_gated;
+    wire signed [44:0] M_prod = A_MULT * B_MULT;
+    wire [44:0] M = MULT_ON ? M_prod : 45'b0;
+    localparam [43:0] U_MASK = 44'h55555555555;
+    wire [44:0] Ud = {1'b1, M[43:0] & U_MASK};
+    wire [44:0] Vd = {~M[44], M[43:0] & ~U_MASK};
+    wire mult_cin_d = ~(A_MULT[26] ^ B_MULT[17]);
+
+    reg [44:0] Uq, Vq;
+    reg        mult_cin_q;
+    generate
+        if (MREG == 1) begin
+            initial Uq = 45'b0;
+            initial Vq = 45'b0;
+            initial mult_cin_q = 1'b0;
+            always @(posedge clk)
+                if (RSTM_i) begin
+                    Uq <= 45'b0;
+                    Vq <= 45'b0;
+                end else if (CEM) begin
+                    Uq <= Ud;
+                    Vq <= Vd;
+                end
+            // The rounding carry register is clocked by CEM but reset by RSTALLCARRYIN.
+            always @(posedge clk)
+                if (RSTALLCARRYIN_i) mult_cin_q <= 1'b0;
+                else if (CEM) mult_cin_q <= mult_cin_d;
+        end
+    endgenerate
+    wire [44:0] Ur = (MREG == 1) ? Uq : Ud;
+    wire [44:0] Vr = (MREG == 1) ? Vq : Vd;
+    wire mult_cin  = (MREG == 1) ? mult_cin_q : mult_cin_d;
+
+    wire [44:0] U_alu = SIMD48 ? Ur : {1'b1, 44'b0};
+    wire [44:0] V_alu = SIMD48 ? Vr : {1'b1, 44'b0};
+
+    // Output register state that feeds back into the ALU (all zero when PREG = 0)
+    reg [47:0] Pq;
+    reg [3:0]  COUTq;
+    reg        ALUMODE10q, MULTSIGNq;
+    reg [7:0]  XORq;
+    reg        pdet_q1, pdet_q2, pdetb_q1, pdetb_q2;
+    wire [47:0] P_fb = (PREG == 1) ? Pq : 48'b0;
+    wire        ccout_fb = (PREG == 1) ? ALUMODE10q ^ COUTq[3] : 1'b0;
+
+    // W, X, Y and Z multiplexers
+    wire [47:0] W = (OPMODEr[8:7] == 2'b00) ? 48'b0 :
+                    (OPMODEr[8:7] == 2'b01) ? P_fb :
+                    (OPMODEr[8:7] == 2'b10) ? RND : Cr;
+    wire [47:0] X = (OPMODEr[1:0] == 2'b00) ? ((OPMODEr[6:4] == 3'b100) ? {46'b0, MULTSIGNIN, 1'b0} : 48'b0) :
+                    (OPMODEr[1:0] == 2'b01) ? {{3{U_alu[44]}}, U_alu} :
+                    (OPMODEr[1:0] == 2'b10) ? P_fb : {A2r, B2r};
+    wire [47:0] Y = (OPMODEr[3:2] == 2'b00) ? 48'b0 :
+                    (OPMODEr[3:2] == 2'b01) ? {3'b000, V_alu} :
+                    (OPMODEr[3:2] == 2'b10) ? {48{1'b1}} : Cr;
+    wire [47:0] Z = (OPMODEr[6:4] == 3'b000) ? 48'b0 :
+                    (OPMODEr[6:4] == 3'b001) ? PCIN :
+                    (OPMODEr[6:4] == 3'b010) ? P_fb :
+                    (OPMODEr[6:4] == 3'b011) ? Cr :
+                    (OPMODEr[6:4] == 3'b100) ? P_fb :
+                    (OPMODEr[6:4] == 3'b101) ? {{17{PCIN[47]}}, PCIN[47:17]} :
+                                               {{17{P_fb[47]}}, P_fb[47:17]};
+
+    // Carry in
+    wire cin_sel = (CARRYINSELr == 3'b000) ? CARRYINr :
+                   (CARRYINSELr == 3'b001) ? ~PCIN[47] :
+                   (CARRYINSELr == 3'b010) ? CARRYCASCIN :
+                   (CARRYINSELr == 3'b011) ? PCIN[47] :
+                   (CARRYINSELr == 3'b100) ? ccout_fb :
+                   (CARRYINSELr == 3'b101) ? ~P_fb[47] :
+                   (CARRYINSELr == 3'b110) ? mult_cin : P_fb[47];
+    wire alu_cin = (ALUMODEr[3] || ALUMODEr[2]) ? 1'b0 : cin_sel;
+
+    // ALU: X + Y + Z' carry-save, then + W carry-save, then a 48-bit
+    // carry-propagate adder split into 12-bit segments for SIMD.
+    wire [47:0] Z_inv = ALUMODEr[0] ? ~Z : Z;
+    wire [47:0] xyz_s = X ^ Y ^ Z_inv;
+    wire [47:0] xyz_c = (X & Y) | (X & Z_inv) | (Y & Z_inv);
+    wire [47:0] co_g  = ALUMODEr[2] ? 48'b0 : xyz_c;
+    wire [47:0] s_g   = ALUMODEr[3] ? xyz_c : xyz_s;
+    wire [47:0] co_simd = {
+            co_g[47:36],
+            co_g[35] & ~SIMD12,
+            co_g[34:24],
+            co_g[23] & SIMD48,
+            co_g[22:12],
+            co_g[11] & ~SIMD12,
+            co_g[10:0]
+        };
+    wire [47:0] co_sh = {co_simd[46:0], 1'b0};
+    wire [47:0] sw_s = s_g ^ co_sh ^ W;
+    wire [47:0] sw_c = (s_g & co_sh) | (W & co_sh) | (s_g & W);
+    wire [48:0] fa_a = {sw_c, alu_cin};
+    wire alumode10 = ALUMODEr[0] & ALUMODEr[1];
+
+    wire [12:0] seg0 = {1'b0, fa_a[11:0]} + {1'b0, sw_s[11:0]};
+    wire c1 = ~SIMD12 & seg0[12];
+    wire l1 = ~SIMD12 & fa_a[12];
+    wire [12:0] seg1 = {1'b0, fa_a[23:13], l1} + {1'b0, sw_s[23:12]} + c1;
+    wire c2 = SIMD48 & seg1[12];
+    wire l2 = SIMD48 & fa_a[24];
+    wire [12:0] seg2 = {1'b0, fa_a[35:25], l2} + {1'b0, sw_s[35:24]} + c2;
+    wire c3 = ~SIMD12 & seg2[12];
+    wire l3 = ~SIMD12 & fa_a[36];
+    wire [13:0] seg3 = {1'b0, fa_a[48:37], l3} + {1'b0, co_simd[47], sw_s[47:36]} + c3;
+
+    wire [47:0] alu_out = {48{ALUMODEr[1]}} ^ {seg3[11:0], seg2[11:0], seg1[11:0], seg0[11:0]};
+    wire cout0 = alumode10 ^ fa_a[12] ^ seg0[12] ^ co_g[11];
+    wire cout1 = alumode10 ^ fa_a[24] ^ seg1[12] ^ co_g[23];
+    wire cout2 = alumode10 ^ fa_a[36] ^ seg2[12] ^ co_g[35];
+    wire cout3 = alumode10 ^ seg3[12];
+    wire multsign_d = seg3[13];
+    // Lower carry outputs are undefined for multiplies, logic operations and wider SIMD lanes.
+    wire mult_or_logic = (OPMODEr[3:0] == 4'b0101) || (ALUMODEr[3:2] != 2'b00);
+    wire [3:0] cout_d = {
+            cout3,
+            (SIMD12 && !mult_or_logic) ? cout2 : 1'bx,
+            (!SIMD48 && !mult_or_logic) ? cout1 : 1'bx,
+            (SIMD12 && !mult_or_logic) ? cout0 : 1'bx
+        };
+
+    // Wide XOR of the three-input sum
+    wire [7:0] x6;
+    genvar i;
+    generate
+        for (i = 0; i < 8; i = i + 1)
+            assign x6[i] = (USE_WIDEXOR == "TRUE") ? ^xyz_s[i*6 +: 6] : 1'b0;
+    endgenerate
+    wire x24a = x6[0] ^ x6[1], x24b = x6[2] ^ x6[3], x24c = x6[4] ^ x6[5], x24d = x6[6] ^ x6[7];
+    wire x48a = x24a ^ x24b, x48b = x24c ^ x24d;
+    wire x96 = x48a ^ x48b;
+    wire [7:0] xor_d = (XORSIMD == "XOR12") ? x6 :
+                       {x6[7], x24d, x48b, x24c, x96, x24b, x48a, x24a};
+
+    // Pattern detector
+    wire [47:0] pattern = (SEL_PATTERN == "C") ? Cr : PATTERN;
+    wire [47:0] mask = (USE_PATTERN_DETECT == "NO_PATDET") ? {48{1'b1}} :
+                       (SEL_MASK == "C")              ? Cr :
+                       (SEL_MASK == "ROUNDING_MODE1") ? {~Cr[46:0], 1'b0} :
+                       (SEL_MASK == "ROUNDING_MODE2") ? {~Cr[45:0], 2'b0} :
+                       MASK;
+    wire pdet_d  = &(~(pattern ^ alu_out) | mask);
+    wire pdetb_d = &( (pattern ^ alu_out) | mask);
+    wire pdet  = (PREG == 1) ? pdet_q1  : pdet_d;
+    wire pdetb = (PREG == 1) ? pdetb_q1 : pdetb_d;
+    wire pdet_past  = (PREG == 1) ? pdet_q2  : pdet_d;
+    wire pdetb_past = (PREG == 1) ? pdetb_q2 : pdetb_d;
+
+    wire autoreset_en = (AUTORESET_PRIORITY == "RESET") || CEP;
+    wire autoreset = (AUTORESET_PATDET == "RESET_MATCH")     ? autoreset_en & pdet :
+                     (AUTORESET_PATDET == "RESET_NOT_MATCH") ? autoreset_en & pdet_past & ~pdet :
+                     1'b0;
+
+    // Output register
+    generate
+        if (PREG == 1) begin
+            initial Pq = 48'b0;
+            initial COUTq = 4'b0;
+            initial ALUMODE10q = 1'b0;
+            initial MULTSIGNq = 1'b0;
+            initial XORq = 8'b0;
+            initial pdet_q1 = 1'b0;
+            initial pdet_q2 = 1'b0;
+            initial pdetb_q1 = 1'b0;
+            initial pdetb_q2 = 1'b0;
+            always @(posedge clk)
+                if (RSTP_i || autoreset) begin
+                    Pq <= 48'b0;
+                    COUTq <= 4'b0;
+                    ALUMODE10q <= 1'b0;
+                    MULTSIGNq <= 1'b0;
+                    XORq <= 8'b0;
+                    pdet_q1 <= 1'b0;
+                    pdet_q2 <= 1'b0;
+                    pdetb_q1 <= 1'b0;
+                    pdetb_q2 <= 1'b0;
+                end else if (CEP) begin
+                    Pq <= alu_out;
+                    COUTq <= cout_d;
+                    ALUMODE10q <= alumode10;
+                    MULTSIGNq <= multsign_d;
+                    XORq <= xor_d;
+                    pdet_q1 <= pdet_d;
+                    pdet_q2 <= pdet_q1;
+                    pdetb_q1 <= pdetb_d;
+                    pdetb_q2 <= pdetb_q1;
+                end
+        end
+    endgenerate
+
+    assign P = (PREG == 1) ? Pq : alu_out;
+    assign PCOUT = P;
+    assign CARRYOUT = (PREG == 1) ? COUTq : cout_d;
+    assign CARRYCASCOUT = ((PREG == 1) ? ALUMODE10q : alumode10) ^ CARRYOUT[3];
+    assign MULTSIGNOUT = (PREG == 1) ? MULTSIGNq : multsign_d;
+    assign XOROUT = (PREG == 1) ? XORq : xor_d;
+    assign PATTERNDETECT = pdet;
+    assign PATTERNBDETECT = pdetb;
+    assign OVERFLOW  = (USE_PATTERN_DETECT == "PATDET") ? (~pdet & ~pdetb & pdet_past)  : 1'bx;
+    assign UNDERFLOW = (USE_PATTERN_DETECT == "PATDET") ? (~pdet & ~pdetb & pdetb_past) : 1'bx;
+endmodule
 
 // Block RAM
 
