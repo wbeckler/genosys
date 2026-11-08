@@ -120,8 +120,8 @@ struct SynthXilinxPass : public ScriptPass
 		log("\n");
 		log("    -widemux <int>\n");
 		log("        enable inference of hard multiplexer resources (MUXF[78]) for muxes at\n");
-		log("        or above this number of inputs (minimum value 2, recommended value >= 5)\n");
-		log("        default: 0 (no inference)\n");
+		log("        or above this number of inputs (minimum value 2); 0 disables it\n");
+		log("        default: 4 for xcu and xcup, 0 (no inference) otherwise\n");
 		log("\n");
 		log("    -json <file>\n");
 		log("        write the design to the specified JSON file. writing of an output file\n");
@@ -172,7 +172,7 @@ struct SynthXilinxPass : public ScriptPass
 		uram = false;
 		dff = false;
 		flatten_before_abc = false;
-		widemux = 0;
+		widemux = -1; // family default, resolved below
 		lut_size = 6;
 	}
 
@@ -311,6 +311,9 @@ struct SynthXilinxPass : public ScriptPass
 			widelut_size = 6;
 		} else
 			log_cmd_error("Invalid Xilinx -family setting: '%s'.\n", family);
+
+		if (widemux < 0)
+			widemux = (family == "xcu" || family == "xcup") ? 4 : 0;
 
 		if (widemux != 0 && lut_size != 6)
 			log_cmd_error("-widemux is not currently supported for LUT4-based architectures.\n");

@@ -32,3 +32,19 @@ equiv_opt -assert -undef -map +/xilinx/cells_sim.v synth_xilinx -family xcup -no
 design -load postopt
 select -assert-count 16 t:MUXF8
 select -assert-max 72 t:LUT*
+
+# -widemux 4 is the default for xcu/xcup; -widemux 0 turns it off
+design -load read
+hierarchy -top bmux_word
+synth_xilinx -family xcup -noiopad
+select -assert-count 16 t:MUXF8
+
+design -load read
+hierarchy -top bmux_word
+synth_xilinx -family xcup -noiopad -widemux 0
+select -assert-none t:MUXF7 t:MUXF8
+
+design -load read
+hierarchy -top bmux_word
+synth_xilinx -family xc7 -noiopad
+select -assert-none t:MUXF7 t:MUXF8
