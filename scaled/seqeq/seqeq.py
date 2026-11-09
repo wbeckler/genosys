@@ -17,7 +17,7 @@ Usage:
            [--depth 8] [--timeout 600] [--engine "smtbmc bitwuzla"]
 Requires eqy/sby/bitwuzla on PATH (e.g. oss-cad-suite/bin).
 """
-import argparse, glob, os, re, subprocess, sys, json
+import argparse, glob, os, re, signal, subprocess, sys, json
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -39,6 +39,30 @@ if a.cases:
     cases = [c for c in cases if int(re.search(r'case(\d+)', c).group(1)) in keep]
 work = os.path.abspath(a.out or os.path.join(a.dir, 'seqeq'))
 os.makedirs(work, exist_ok=True)
+
+def run_eqy(cmd, timeout):
+    """Run eqy; return its stdout, or None on timeout.
+
+    eqy forks make -> sby -> yosys-smtbmc -> solver.  subprocess.run's timeout
+    kills only eqy, orphaning that whole tree (observed: hundreds of bitwuzla
+    processes grinding for hours after their case had already been scored
+    TIMEOUT).  So start eqy in its own process group and kill the group."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         start_new_session=True)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return out
+    except subprocess.TimeoutExpired:
+        pass
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try: os.killpg(p.pid, sig)
+        except ProcessLookupError: break
+        try:
+            p.communicate(timeout=5)
+            break
+        except subprocess.TimeoutExpired:
+            continue   # sby ignores SIGTERM; escalate to SIGKILL
+    return None
 
 def one(rtl, xprop=True):
     name = os.path.basename(rtl)[:-2]
@@ -75,12 +99,8 @@ engine {a.engine}
     if not xprop: name += '.noxprop'
     fn = os.path.join(work, name + '.eqy')
     open(fn, 'w').write(cfg)
-    try:
-        cp = subprocess.run(['eqy', '-f', '-j', '1', '-d', os.path.join(work, name), fn],
-                            capture_output=True, text=True, timeout=a.timeout)
-    except subprocess.TimeoutExpired:
-        return name, 'TIMEOUT'
-    out = cp.stdout
+    out = run_eqy(['eqy', '-f', '-j', '1', '-d', os.path.join(work, name), fn], a.timeout)
+    if out is None: return name, 'TIMEOUT'
     if 'DONE (PASS' in out: return name, 'PROVED'
     if re.search(r'Failed to prove|DONE \(FAIL', out):
         # distinguish a real counterexample (basecase) from inconclusive induction
