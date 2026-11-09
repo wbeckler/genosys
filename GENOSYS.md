@@ -41,6 +41,7 @@ generators). "gen" for code generation, "osys" for Yosys; pronounced *genesis*.
 | `wbeckler/xilinx-widemux-fix` | `synth_xilinx -widemux` produced wrong logic for `in[sel*8 +: W]` near the top of the bus and for strided selects (`$__XILINX_SHIFTX` bit-blast range, >16-input group select bits, A wider than 2**B) | upstream fails 26/60 random `$shiftx` shapes; all 180 shape/option combos + 40 large ones + all parser kernels prove with SAT; `tests/arch/xilinx/widemux_shiftx.ys` fails upstream |
 | `wbeckler/xilinx-parser-qor` | peepopt: overlapping strided select (`in[sel*34 +: 40]`, #3873 W2>W) becomes a `$bmux` on `sel` (the multiply used to land in a DSP48E2); `-widemux` maps `$bmux` onto MUXF7/F8; `scaled/parserqor` benchmark | stride_select W=40: 1636 LUT + 1 DSP, depth 8 -> 209 LUT, depth 3 |
 | `wbeckler/xilinx-widemux-default` | `-widemux 4` is the default on xcu/xcup (`-widemux 0` disables; xc7 unchanged) | 13 parser kernels: 8924 -> 3066 LUT (-66%); picorv32 -3..-8% LUT; dspfuzz xcup 1000/1000, resources identical |
+| `wbeckler/seqeq` | Sequential equivalence (eqy/SBY k-induction) of RTL vs netlist per dspfuzz case, ports-only matching so DSP pipeline state is proved as a whole (`scaled/seqeq`) | genosys xcup: 518/1000 proved, 482 time out (180 s), 0 counterexamples; catches the upstream xc7 miscompiles (cases 3, 8, 21) |
 
 Upstream issues addressed: #6311, #6312, #6252, #6046 (and the bug fixed by open PR #6138); #3873/PR #3880 (overlapping strided selects). #3893 does not apply to synth_xilinx: it already runs `opt_expr -mux_undef` before abc9.
 
@@ -61,6 +62,9 @@ Upstream issues addressed: #6311, #6312, #6252, #6046 (and the bug fixed by open
    delays on US+, as it does for DSP48E1.
 5. Small known conservatism: post-adder folding is declined when the pre-adder
    is not folded and the operand range cannot be proven (1 in 1000 cases).
-6. `equiv_opt` cannot prove pipelined DSP packings (DSP state is not the RTL
-   state) and multipliers above ~6x6 time out; co-simulation is the check
-   there. A sequential equivalence flow (e.g. via SBY) would close this.
+6. **Sequential equivalence timeouts.** `scaled/seqeq` proves about half of
+   the xcup dspfuzz cases; the rest (mostly wide multipliers, including
+   single-DSP ones and multipliers split across several DSPs) time out on
+   every engine tried (bitwuzla, yices, z3, abc pdr). Co-simulation stays the
+   check there. Possible next steps: prove the DSP model once against a
+   word-level multiply, then abstract it in the netlist.
